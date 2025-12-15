@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+
+# VSCode
+.vscode/
+
+# Dados pesados / gerados
+data/git_repo/
