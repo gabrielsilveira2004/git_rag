@@ -2,7 +2,6 @@
 from pathlib import Path
 from git import Repo
 from langchain_core.documents import Document
-from .chunk import chunk_documents
 
 BASE_DIR = Path.cwd() # Current working directory
 DATA_DIR = BASE_DIR / "data" # Data directory
@@ -84,14 +83,14 @@ def preview_documents(documents, n=3, preview_chars=300):
         print(f"    {snippet}...")
         print("-" * 80)
 
-if __name__ == "__main__":
-    ingest_user_documentation()
+# if __name__ == "__main__":
+   # ingest_user_documentation()
     #documents = ingest_user_documentation()
     #preview_documents(documents=documents, n=5)
 
-    documents = ingest_user_documentation()
-    chunked_docs = chunk_documents(documents)
-    print(f"Total chunked documents: {len(chunked_docs)}")
-    print(f"Chunk preview:")
-    for c in chunked_docs[:3]:
-        print(f"Source: {c.metadata.get('source')}, Section: {c.metadata.get('section_title')}, Size: {len(c.page_content)} characters")
+    #documents = ingest_user_documentation()
+    #chunked_docs = chunk_documents(documents)
+    #print(f"Total chunked documents: {len(chunked_docs)}")
+    #print(f"Chunk preview:")
+    #for c in chunked_docs[:3]:
+        #print(f"Source: {c.metadata.get('source')}, Section: {c.metadata.get('section_title')}, Size: {len(c.page_content)} characters")

@@ -15,6 +15,7 @@ Clona o repositório oficial do Git, processa arquivos `.adoc`, `.md` e `.txt`, 
 - Lê documentação (`.adoc`, `.md`, `.txt`) e converte em documentos para RAG.
 - Chunking semântico por seções, preservando metadados como título, índice e texto.
 - Armazena commit do Git para referência.
+- Organiza e prepara os documentos para consulta com RAG.
 
 ## Estrutura do Projeto
 
@@ -26,7 +27,7 @@ git_rag/
 │   └── ...
 ├── data/git_repo/   # Repositório clonado (não versionar)
 ├── scripts/         # Scripts utilitários
-├── tests/           # Testes
+├── tests/           # Testes de partes do processo (ingestão de dados e chunking)
 ├── requirements.txt
 └── .gitignore
 ```
