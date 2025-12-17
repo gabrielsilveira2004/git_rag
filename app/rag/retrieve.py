@@ -1,7 +1,7 @@
 from typing import List, Set
 import re
 from langchain_core.documents import Document
-from vectorstore import load_vectorstore
+from .vectorstore import load_vectorstore
 
 # Retrieval settings
 SEARCH_K_PER_QUERY = 4
@@ -47,7 +47,7 @@ def deduplicate_documents(documents: List[Document]) -> List[Document]:
     return unique_docs
 
 # Retrieve documents relevant to the query
-def retrieve_documents(query: str) -> List[Document]:
+def retrieve_documents(query: str, k: int = FINAL_TOP_K) -> List[Document]:
     vectorstore = load_vectorstore()
     expanded_queries = expand_query(query)
 
@@ -63,7 +63,7 @@ def retrieve_documents(query: str) -> List[Document]:
 
     unique_results = deduplicate_documents(all_results)
 
-    return unique_results[:FINAL_TOP_K]
+    return unique_results[:k]
 
 
 if __name__ == "__main__":
