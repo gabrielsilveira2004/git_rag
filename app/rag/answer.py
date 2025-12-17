@@ -121,8 +121,8 @@ if __name__ == "__main__":
 
     sys.path.insert(0, str(Path(__file__).parent.parent))
 
-    from vectorstore import load_vectorstore
-    from retrieve import retrieve_documents
+    from .vectorstore import load_vectorstore
+    from .retrieve import retrieve_documents
 
     print("Loading vectorstore...")
     vectorstore = load_vectorstore()
