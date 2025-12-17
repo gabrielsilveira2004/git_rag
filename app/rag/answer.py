@@ -6,9 +6,9 @@ from langchain_huggingface import HuggingFacePipeline
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
 import re
 
-MODEL_NAME = "google/flan-t5-base"
+MODEL_NAME = "google/flan-t5-large"
 
-
+# Create and configure the language model pipeline
 def get_llm():
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
@@ -18,14 +18,18 @@ def get_llm():
         model=model,
         tokenizer=tokenizer,
         max_new_tokens=512,
-        repetition_penalty=1.1
+        do_sample=True,
+        temperature=0.7,
+        top_p=0.9,
+        repetition_penalty=1.05
     )
 
     return HuggingFacePipeline(pipeline=hf_pipe)
 
 
+# Detect the user's intent based on simple linguistic patterns
 def detect_intent(question: str) -> str:
-    q = question.lower()
+    q = question.lower().strip()
 
     if "difference" in q or "compare" in q:
         return "comparison"
@@ -39,39 +43,42 @@ def detect_intent(question: str) -> str:
     return "general"
 
 
+# Build a bounded textual context from retrieved documents
 def build_context(documents: List[Document], max_chars: int = 5000) -> str:
     blocks = []
-    total = 0
+    total_chars = 0
 
-    for i, doc in enumerate(documents, start=1):
+    for idx, doc in enumerate(documents, start=1):
         text = doc.page_content.strip()
+
         if not text:
             continue
 
-        header = f"[Source {i}]"
-        block = f"{header}\n{text}"
+        source_block = f"[Source {idx}]\n{text}"
 
-        if total + len(block) > max_chars:
+        if total_chars + len(source_block) > max_chars:
             break
 
-        blocks.append(block)
-        total += len(block)
+        blocks.append(source_block)
+        total_chars += len(source_block)
 
     return "\n\n".join(blocks)
 
 
+# Build a prompt template based on the detected intent
 def build_prompt(intent: str) -> PromptTemplate:
     base_rules = """
 You are an assistant specialized in Git documentation.
-Use only the provided context.
-If the answer cannot be derived from the context, say you do not know.
+Use the provided context as your primary source.
+Explain concepts clearly and in sufficient detail.
+If the answer cannot be inferred from the context, say you do not know.
 """
 
     intent_instructions = {
-        "procedural": "Explain the process step by step in clear language.",
-        "reasoning": "Explain the reasoning, purpose, and consequences.",
-        "comparison": "Compare the concepts, highlighting differences and use cases.",
-        "definition": "Provide a clear and concise definition with context.",
+        "procedural": "Explain the process step by step, using clear and practical language.",
+        "reasoning": "Explain the reasoning, purpose, and implications behind the concept.",
+        "comparison": "Compare the concepts, highlighting key differences and use cases.",
+        "definition": "Provide a clear and concise definition, adding context when helpful.",
         "general": "Provide a clear and helpful explanation."
     }
 
@@ -96,7 +103,8 @@ Answer:
     )
 
 
-def answer_question(question: str, documents: List[Document]) -> str:
+# Orchestrate retrieval, prompt construction, and answer generation
+def answer_question(question: str, documents: List[Document], vectorstore=None) -> str:
     intent = detect_intent(question)
     context = build_context(documents)
 
@@ -117,24 +125,24 @@ if __name__ == "__main__":
     from retrieve import retrieve_documents
 
     print("Loading vectorstore...")
-    vs = load_vectorstore()
+    vectorstore = load_vectorstore()
 
-    tests = [
+    test_questions = [
         "How does git checkout-index work?",
         "Why should I use git branch before pushing changes?",
         "What is the difference between git merge and git rebase?"
     ]
 
-    for q in tests:
-        intent = detect_intent(q)
+    for question in test_questions:
+        intent = detect_intent(question)
         k = 6 if intent == "comparison" else 4
 
-        print("\n" + "-" * 40)
-        print(f"Question: {q}")
+        print("\n" + "-" * 50)
+        print(f"Question: {question}")
         print(f"Detected intent: {intent}")
 
-        docs = retrieve_documents(q)
-        answer = answer_question(q, docs)
+        documents = retrieve_documents(question, k=k)
+        answer = answer_question(question, documents)
 
         print("\nAnswer:")
         print(answer)
