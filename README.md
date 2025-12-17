@@ -32,6 +32,51 @@ O sistema clona o repositório oficial do Git, processa arquivos de documentaç�
 ```
 git_rag/
 ├── app/
+# Git RAG – Chat With Git Docs
+
+![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
+![LangChain](https://img.shields.io/badge/LangChain-1.x-green.svg)
+![GitPython](https://img.shields.io/badge/GitPython-3.1.45-orange.svg)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.1.0-red.svg)
+
+Projeto para ingestão da documentação oficial do Git e criação de um sistema RAG (Retrieval-Augmented Generation).
+
+Resumo rápido — o que este repositório faz de diferente:
+
+- Foca especificamente na documentação oficial do Git (clona https://github.com/git/git) e preserva metadados de commit para rastreabilidade.
+- Usa chunking por seções (AsciiDoc/Markdown-aware) para manter contexto técnico por tópicos/sections, reduzindo ruído em buscas semânticas.
+- Constrói um vector store local com FAISS + `sentence-transformers/all-MiniLM-L6-v2` para embeddings leves e rápidos.
+- Recuperação com MMR (max-marginal-relevance) e expansão controlada de consultas para melhores resultados relevantes e menos duplicação.
+- Geração de respostas com um LLM local via `transformers` (ex.: FLAN-T5) encapsulado em `langchain_huggingface` para pipelines text2text.
+- Oferece uma API FastAPI simples que carrega o vectorstore e o LLM na inicialização, e ajusta `top_k` dinamicamente segundo a intenção da pergunta.
+
+O objetivo é ser uma base prática para construir assistentes técnicos orientados a documentação, com ênfase em reprodutibilidade (índice salvo em `data/vectorstore/`) e explicabilidade (metadados de fonte e commit).
+
+## Como Funciona (visão rápida)
+
+1. **Ingestão**: `scripts/ingest_git.py` clona (ou atualiza) o repositório oficial do Git e carrega arquivos de documentação (`.adoc`, `.md`, `.txt`). Cada documento recebe metadados incluindo o hash do commit.
+2. **Chunking**: `app/rag/chunk.py` divide cada documento por seções/headers para preservar contexto técnico por tópico.
+3. **Indexação**: `app/rag/vectorstore.py` cria um index FAISS a partir dos chunks usando embeddings da família `sentence-transformers`.
+4. **Recuperação**: `app/rag/retrieve.py` usa busca semântica com MMR e expansão de query para obter documentos relevantes e desduplicar resultados.
+5. **Geração**: `app/rag/answer.py` monta um prompt (com detecção de intenção) e gera resposta via pipeline HF (ex.: `google/flan-t5-large`).
+6. **API**: `app/api/main.py` expõe `/chat` para requisições, carregando o vectorstore e o LLM na inicialização.
+
+## Funcionalidades principais
+
+- Clonagem/atualização do repositório Git e extração de documentos de `Documentation/`.
+- Chunking por seções para preservar contexto técnico.
+- Vector store FAISS local com embeddings HuggingFace (`sentence-transformers/all-MiniLM-L6-v2`).
+- Recuperação com MMR e expansão de consulta para reduzir duplicatas e melhorar cobertura.
+- Prompting com detecção de intenção (procedural, reasoning, comparison, definition, general).
+- Respostas geradas por um LLM local via `transformers` integrado com `langchain_huggingface`.
+
+Nota: alguns testes e módulos utilitários estão incluídos, e o vectorstore é salvo em `data/vectorstore/` para reutilização sem reindexação.
+
+## Estrutura do Projeto
+
+```
+git_rag/
+├── app/
 │   ├── api/
 │   │   └── main.py          # API FastAPI
 │   └── rag/
@@ -46,9 +91,6 @@ git_rag/
 ├── scripts/
 │   └── ingest_git.py        # Script para ingestão completa
 ├── tests/
-│   ├── ingest_test.py       # Testes de ingestão
-│   ├── chunk_test.py        # Testes de chunking
-│   └── vectorstore_test.py  # Testes do vector store
 ├── requirements.txt
 ├── README.md
 └── .gitignore
@@ -58,115 +100,71 @@ git_rag/
 
 - Python 3.10 ou superior
 - Git instalado
-- Pelo menos 4GB de RAM (para embeddings e LLM)
+- Pelo menos 4GB de RAM (embeddings + index); para a geração com FLAN-T5, mais memória/VRAM pode ser necessária dependendo do backend (CPU vs GPU).
 
-## Instalação
+## Instalação e execução rápida
 
-1. Clone o repositório:
-   ```bash
-   git clone https://github.com/gabrielsilveira2004/git_rag.git
-   cd git_rag
-   ```
+1. Clone o repositório e entre na pasta do projeto:
 
-2. Crie e ative um ambiente virtual:
-   ```bash
-   python -m venv .venv
-   # Windows
-   .\.venv\Scripts\activate
-   # Linux/Mac
-   source .venv/bin/activate
-   ```
+```bash
+git clone https://github.com/gabrielsilveira2004/git_rag.git
+cd git_rag
+```
 
-3. Instale as dependências:
-   ```bash
-   pip install -r requirements.txt
-   ```
+2. Crie e ative um ambiente virtual (Windows PowerShell):
 
-## Uso
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+# Se bloqueado: Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
 
-### 1. Construir o Índice (Vector Store)
+3. Instale dependências:
 
-Execute a ingestão completa para preparar os dados:
+```bash
+pip install -r requirements.txt
+```
+
+4. Execute a ingestão e construção do índice:
 
 ```bash
 python scripts/ingest_git.py
 ```
 
-Este script:
-- Clona/atualiza o repositório Git
-- Carrega e chunk os documentos
-- Constrói o vector store em `data/vectorstore/`
-
-### 2. Executar a API
-
-Inicie o servidor FastAPI:
+5. Inicie a API:
 
 ```bash
 uvicorn app.api.main:app --reload
 ```
 
-A API estará disponível em `http://127.0.0.1:8000`
+Abra `http://127.0.0.1:8000/docs` para a interface interativa.
 
-### 3. Testar a API
+## Uso
 
-- **Página inicial**: `GET /` - Mensagem de boas-vindas
-- **Documentação interativa**: `GET /docs` - Interface Swagger UI para testar endpoints
-- **Chat**: `POST /chat` - Envie perguntas sobre Git
+Siga estes passos principais:
 
-Exemplo de request para `/chat`:
+1. `python scripts/ingest_git.py` — realiza clone/atualização, normalização, chunking, e salva o vectorstore em `data/vectorstore/`.
+2. `uvicorn app.api.main:app --reload` — inicia a API que carrega o vectorstore e o LLM na inicialização.
+3. `POST /chat` — endpoint principal para enviar perguntas. O corpo aceita `{"question": "...", "top_k": 4}`; se `top_k` não for fornecido, o sistema ajusta automaticamente com base na intenção detectada.
 
-```json
-{
-  "question": "Como funciona o git commit?",
-  "top_k": 4
-}
-```
+Exemplo de resposta inclui `answer`, `intent` e `sources` com snippets e nomes de arquivos.
 
-Resposta:
-```json
-{
-  "answer": "O comando git commit salva as mudanças no repositório local...",
-  "intent": "procedural",
-  "sources": [
-    {
-      "file": "Documentation/git-commit.txt",
-      "snippet": "git-commit - Record changes to the repository..."
-    }
-  ]
-}
-```
+## Testes
 
-### 4. Testes
-
-Execute os testes automatizados:
+Execute os testes (quando disponíveis):
 
 ```bash
-python -m pytest tests/  # ou
-python tests/ingest_test.py
-python tests/chunk_test.py
-python tests/vectorstore_test.py
+python -m pytest tests/
 ```
-
-## API Documentation
-
-### Endpoints
-
-- `GET /`: Status da API
-- `POST /chat`: Chat com a documentação Git
-  - **Body**: `{"question": "string", "top_k": 4}`
-  - **Response**: `{"answer": "string", "intent": "string", "sources": [...]}`
-
-A documentação completa está disponível em `/docs` quando o servidor estiver rodando.
 
 ## Desenvolvimento
 
 Para contribuir:
 
 1. Fork o repositório
-2. Crie uma branch para sua feature: `git checkout -b feature/nova-funcionalidade`
-3. Faça commits: `git commit -m "Adiciona nova funcionalidade"`
-4. Push: `git push origin feature/nova-funcionalidade`
-5. Abra um Pull Request
+2. Crie uma branch: `git checkout -b feature/nome`
+3. Faça commits claros e pequenos
+4. `git push origin feature/nome` e abra um PR
 
 ## Licença
 
