@@ -3,11 +3,9 @@ from pydantic import BaseModel
 from typing import List
 from pathlib import Path
 import json
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from rag.vectorstore import load_vectorstore
-from rag.retrieve import retrieve_documents
-from rag.answer import answer_question, detect_intent
+from app.rag.vectorstore import load_vectorstore
+from app.rag.retrieve import retrieve_documents
+from app.rag.answer import answer_question, detect_intent
 
 app = FastAPI(
     title="Git RAG API",
