@@ -34,7 +34,7 @@ git_rag/
 
 ## Pré-requisitos
 
-- Python 3.8 ou superior
+- Python 3.11 ou superior
 - Git instalado no sistema
 
 ## Instalação
