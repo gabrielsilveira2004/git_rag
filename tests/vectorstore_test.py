@@ -1,84 +1,68 @@
 from pathlib import Path
+import shutil
 import sys
 
-# Add the parent directory to sys.path to import modules from app
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.rag.ingest import load_documents
 from app.rag.chunk import chunk_documents
-from app.rag.vectorstore import (
-    build_vectorstore,
-    save_vectorstore,
-    load_vectorstore,
-    VECTORSTORE_DIR
-)
+from app.rag.vectorstore import build_vectorstore, get_embedding_model
+from langchain_community.vectorstores import FAISS
 
-def test_build_vectorstore():
-    try:
-        # Load and chunk documents
-        docs = load_documents()
-        print(f"Documents loaded: {len(docs)}")
+TEST_VECTORSTORE_DIR = Path("data/vectorstore_test")
 
-        chunks = chunk_documents(docs)
-        print(f"Chunks created: {len(chunks)}")
 
-        # Build vectorstore
-        vectorstore = build_vectorstore(chunks)
-        print("Vectorstore built successfully.")
+def test_vectorstore_build_and_search():
+    # Cleanup
+    if TEST_VECTORSTORE_DIR.exists():
+        shutil.rmtree(TEST_VECTORSTORE_DIR)
 
-        # Basic sanity check
-        print(f"Total vectors indexed: {vectorstore.index.ntotal}")
+    # Load small subset
+    docs = load_documents()[:10]
+    chunks = chunk_documents(docs)
 
-        # Example semantic search
-        query = "How does git checkout-index work?"
-        results = vectorstore.similarity_search(query, k=3)
+    vectorstore = build_vectorstore(chunks)
 
-        print(f"\nQuery: {query}")
-        print(f"Results returned: {len(results)}")
+    # Save test index
+    TEST_VECTORSTORE_DIR.mkdir(parents=True, exist_ok=True)
+    vectorstore.save_local(str(TEST_VECTORSTORE_DIR))
 
-        for i, doc in enumerate(results, start=1):
-            print(f"\nResult {i}:")
-            print(f"Source: {doc.metadata.get('source')}")
-            print(doc.page_content[:300], "...")
+    # Reload test index
+    embedding_model = get_embedding_model()
+    loaded_vs = FAISS.load_local(
+        str(TEST_VECTORSTORE_DIR),
+        embedding_model,
+        allow_dangerous_deserialization=True
+    )
 
-        print("\nVectorstore build test passed!")
+    assert loaded_vs.index.ntotal > 0
 
-    except Exception as e:
-        print(f"Vectorstore build test failed: {e}")
+    queries = [
+        "What is Git?",
+        "How does git checkout-index work?",
+        "What is the difference between git merge and git rebase?",
+    ]
 
-def test_save_and_load_vectorstore():
-    try:
-        # Load and chunk a small subset (speed)
-        docs = load_documents()[:10]
-        chunks = chunk_documents(docs)
+    for query in queries:
+        results = loaded_vs.similarity_search(query, k=3)
 
-        vectorstore = build_vectorstore(chunks)
+        print("\n" + "=" * 60)
+        print(f"Query: {query}")
+        print(f"Results: {len(results)}")
 
-        # Save vectorstore
-        save_vectorstore(vectorstore)
-        print(f"Vectorstore saved at: {VECTORSTORE_DIR}")
+        sources = set()
 
-        # Load vectorstore
-        loaded_vectorstore = load_vectorstore()
-        print("Vectorstore loaded successfully.")
+        for i, doc in enumerate(results, 1):
+            source = doc.metadata.get("source")
+            sources.add(source)
 
-        print(f"Total vectors after load: {loaded_vectorstore.index.ntotal}")
+            print(f"\nResult {i}")
+            print(f"Source: {source}")
+            print(doc.page_content[:200], "...")
 
-        # Test query on loaded vectorstore
-        query = "What is Git?"
-        results = loaded_vectorstore.similarity_search(query, k=2)
+        print(f"\nUnique sources returned: {len(sources)}")
 
-        print(f"\nQuery after load: {query}")
-        for i, doc in enumerate(results, start=1):
-            print(f"\nResult {i}:")
-            print(f"Source: {doc.metadata.get('source')}")
-            print(doc.page_content[:300], "...")
-
-        print("\nSave/load vectorstore test passed!")
-
-    except Exception as e:
-        print(f"Save/load vectorstore test failed: {e}")
+    print("\n✅ Vectorstore TEST passed")
 
 if __name__ == "__main__":
-    test_build_vectorstore()
-    test_save_and_load_vectorstore()
+    test_vectorstore_build_and_search()

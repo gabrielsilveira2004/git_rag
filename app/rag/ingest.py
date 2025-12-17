@@ -1,96 +1,124 @@
-# Transform Git user docummentation into a RAG-ingestible and processable format
+# Load and normalize Git documentation for RAG ingestion
 from pathlib import Path
 from git import Repo
 from langchain_core.documents import Document
 
-BASE_DIR = Path.cwd() # Current working directory
-DATA_DIR = BASE_DIR / "data" # Data directory
-REPO_DIR = DATA_DIR / "git_repo" # Git repository directory
-DOCS_DIR = REPO_DIR / "Documentation" # Documentation directory within the repo
-GIT_REPO_URL = "https://github.com/git/git.git" # Git repository URL
-DOC_EXTENSIONS = {".md", ".txt", ".adoc"} # Supported documentation file extensions
+# -----------------------------
+# Paths and constants
+# -----------------------------
+BASE_DIR = Path.cwd()
+DATA_DIR = BASE_DIR / "data"
+REPO_DIR = DATA_DIR / "git_repo"
+DOCS_DIR = REPO_DIR / "Documentation"
 
-def get_git_commit_hash():
+GIT_REPO_URL = "https://github.com/git/git.git"
+DOC_EXTENSIONS = {".md", ".txt", ".adoc"}
+
+
+# -----------------------------
+# Repository helpers
+# -----------------------------
+def clone_repo() -> None:
+    if REPO_DIR.exists() and (REPO_DIR / ".git").exists():
+        print("Git repository already present.")
+        return
+
+    print("Cloning Git repository...")
+    Repo.clone_from(GIT_REPO_URL, REPO_DIR)
+    print("Repository cloned successfully.")
+
+
+def get_repo_commit_hash() -> str:
     repo = Repo(REPO_DIR)
-    return repo.head.object.hexsha
+    return repo.head.commit.hexsha
 
-# MAIN FUNCTIONS
-def clone_repo(): # Clone the Git repository if not already cloned
-    if REPO_DIR.exists() and (REPO_DIR / '.git').exists():
-        print("Repository already exists.")
-    else:
-        print("Cloning Git repository...")
-        Repo.clone_from(GIT_REPO_URL, REPO_DIR)
-        print("Repository cloned.")
-    
-def load_documents(): # Load and transform user documentation files into Document objects
+
+# -----------------------------
+# Document loading
+# -----------------------------
+def load_documents() -> list[Document]:
     if not DOCS_DIR.exists():
-        raise RuntimeError(f"Documentation directory {DOCS_DIR} does not exist.")
-    
+        raise RuntimeError(f"Documentation directory not found: {DOCS_DIR}")
+
     files = [
         f for f in DOCS_DIR.rglob("*")
-        if f.suffix.lower() in DOC_EXTENSIONS
+        if f.suffix.lower() in DOC_EXTENSIONS and f.is_file()
     ]
-    
+
     print(f"Found {len(files)} documentation files.")
-    
-    documents = []
-    
-    for file_path in files:
+
+    commit_hash = get_repo_commit_hash()
+    documents: list[Document] = []
+
+    for path in files:
         try:
-            text = file_path.read_text(encoding="utf-8", errors="ignore")
-            
+            raw_text = path.read_text(encoding="utf-8", errors="ignore")
+            normalized_text = normalize_text(raw_text)
+
+            relative_path = path.relative_to(REPO_DIR)
+
             documents.append(
                 Document(
-                    page_content=text,
+                    page_content=normalized_text,
                     metadata={
-                        "source": str(file_path.relative_to(REPO_DIR)),
-                        "file_name": file_path.name,
-                        "file_path": str(file_path),
-                        "type": "user_documentation",
-                        "git_commit": get_git_commit_hash(),
+                        "source": str(relative_path),
+                        "file_name": path.name,
+                        "doc_dir": str(relative_path.parent),
+                        "git_commit": commit_hash,
                     },
                 )
             )
-        
+
         except Exception as e:
-            print(f"Error reading {file_path}: {e}")
-        
+            print(f"Failed to read {path}: {e}")
+
     return documents
 
-def ingest_user_documentation(): # Main function to clone repo and load documents
+
+# -----------------------------
+# Text normalization (NOT chunking)
+# -----------------------------
+def normalize_text(text: str) -> str:
+    """
+    Basic normalization:
+    - normalize line endings
+    - trim excessive whitespace
+    """
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.rstrip() for line in text.splitlines()]
+    return "\n".join(lines).strip()
+
+
+# -----------------------------
+# Ingest orchestration
+# -----------------------------
+def ingest_user_documentation() -> list[Document]:
     clone_repo()
     documents = load_documents()
-    print(f"Loaded {len(documents)} documentation files.")
+    print(f"Ingested {len(documents)} documents.")
     return documents
 
-# PREVIEW FUNCTION
-def preview_documents(documents, n=3, preview_chars=300):
+
+# -----------------------------
+# Preview utility (debug only)
+# -----------------------------
+def preview_documents(documents: list[Document], n: int = 3, chars: int = 300):
     print(f"\nPreviewing {min(n, len(documents))} documents:\n")
 
     for i, doc in enumerate(documents[:n], start=1):
-        content = doc.page_content.strip()
+        content = doc.page_content
 
-        print(f"[{i}] Source: {doc.metadata.get('source')}")
-        print(f"    File: {doc.metadata.get('file_name')}")
-        print(f"    Size: {len(content)} characters")
-        print(f"    Git commit: {doc.metadata.get('git_commit')}")
-        print("    Content preview:\n")
+        print(f"[{i}] Source: {doc.metadata['source']}")
+        print(f"    Directory: {doc.metadata['doc_dir']}")
+        print(f"    Size: {len(content)} chars")
+        print(f"    Commit: {doc.metadata['git_commit']}")
+        print("    Preview:")
 
-        snippet = content[:preview_chars]
-        snippet = snippet.replace("\n", " ").strip()
-
+        snippet = content[:chars].replace("\n", " ")
         print(f"    {snippet}...")
         print("-" * 80)
-
-# if __name__ == "__main__":
-   # ingest_user_documentation()
-    #documents = ingest_user_documentation()
-    #preview_documents(documents=documents, n=5)
-
-    #documents = ingest_user_documentation()
-    #chunked_docs = chunk_documents(documents)
-    #print(f"Total chunked documents: {len(chunked_docs)}")
-    #print(f"Chunk preview:")
-    #for c in chunked_docs[:3]:
-        #print(f"Source: {c.metadata.get('source')}, Section: {c.metadata.get('section_title')}, Size: {len(c.page_content)} characters")
+      
+# COMMENT OUT THE FOLLOWING LINES IF NOT RUNNING DIRECTLY  
+if __name__ == "__main__":
+    docs = ingest_user_documentation()
+    preview_documents(docs)
