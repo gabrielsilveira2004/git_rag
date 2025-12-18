@@ -168,6 +168,20 @@ Para contribuir:
 4. Push: `git push origin feature/nova-funcionalidade`
 5. Abra um Pull Request
 
+## Estado do Projeto
+
+- **Desenvolvimento de API (porém apenas local)**
+
+  ![Desenvolvimento de API](imgs/git_api.jpeg)
+
+- **Possibilidade de realizar queries**
+
+  ![Possibilidade de realizar queries](imgs/query.jpeg)
+
+- **Response das queries**
+
+  ![Response das queries](imgs/response.jpeg)
+
 ## Licença
 
 Este projeto está licenciado sob a [MIT License](LICENSE).
