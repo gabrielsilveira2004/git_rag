@@ -1,33 +1,54 @@
 from typing import List
+import re
+import torch
 from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_huggingface import HuggingFacePipeline
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
-import re
 
-MODEL_NAME = "google/flan-t5-base"
+# -----------------------------
+# Model configuration
+# -----------------------------
+MODEL_NAME = "google/flan-t5-small"
+
+_llm_instance = None  # Singleton cache
 
 
 def get_llm():
+    """Load FLAN-T5 model once and reuse (API-safe)."""
+    global _llm_instance
+
+    if _llm_instance is not None:
+        return _llm_instance
+
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
 
-    hf_pipe = pipeline(
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = model.to(device)
+
+    hf_pipeline = pipeline(
         task="text2text-generation",
         model=model,
         tokenizer=tokenizer,
-        max_new_tokens=512,
-        repetition_penalty=1.1
+        max_length=120,
+        min_length=10,
+        do_sample=False,  # deterministic (important for API)
+        device=0 if device == "cuda" else -1,
     )
 
-    return HuggingFacePipeline(pipeline=hf_pipe)
+    _llm_instance = HuggingFacePipeline(pipeline=hf_pipeline)
+    return _llm_instance
 
 
+# -----------------------------
+# Intent detection
+# -----------------------------
 def detect_intent(question: str) -> str:
     q = question.lower()
 
-    if "difference" in q or "compare" in q:
+    if any(w in q for w in ["difference", "compare", "vs"]):
         return "comparison"
     if q.startswith("why"):
         return "reasoning"
@@ -39,17 +60,32 @@ def detect_intent(question: str) -> str:
     return "general"
 
 
-def build_context(documents: List[Document], max_chars: int = 5000) -> str:
+# -----------------------------
+# Context builder
+# -----------------------------
+def build_context(documents: List[Document], max_chars: int = 700) -> str:
+    """
+    Build compact, structured context.
+    FLAN-T5 hates long and noisy inputs.
+    """
     blocks = []
     total = 0
 
-    for i, doc in enumerate(documents, start=1):
+    for doc in documents:
+        command = doc.metadata.get("command", "unknown")
+        section = doc.metadata.get("section", "")
+
         text = doc.page_content.strip()
+
+        # Remove semantic headers if present
+        if text.startswith("Git Command:"):
+            lines = text.splitlines()
+            text = "\n".join(lines[3:]).strip()
+
         if not text:
             continue
 
-        header = f"[Source {i}]"
-        block = f"{header}\n{text}"
+        block = f"Command: {command}\nSection: {section}\n{text[:350]}"
 
         if total + len(block) > max_chars:
             break
@@ -60,42 +96,56 @@ def build_context(documents: List[Document], max_chars: int = 5000) -> str:
     return "\n\n".join(blocks)
 
 
+# -----------------------------
+# Prompt builder
+# -----------------------------
 def build_prompt(intent: str) -> PromptTemplate:
-    base_rules = """
-You are an assistant specialized in Git documentation.
-Use only the provided context.
-If the answer cannot be derived from the context, say you do not know.
-"""
+    """
+    Explicit prompts per intent.
+    FLAN-T5 performs MUCH better this way.
+    """
 
-    intent_instructions = {
-        "procedural": "Explain the process step by step in clear language.",
-        "reasoning": "Explain the reasoning, purpose, and consequences.",
-        "comparison": "Compare the concepts, highlighting differences and use cases.",
-        "definition": "Provide a clear and concise definition with context.",
-        "general": "Provide a clear and helpful explanation."
-    }
+    if intent == "definition":
+        instruction = (
+            "Give a short, clear definition in one sentence."
+        )
+    elif intent == "procedural":
+        instruction = (
+            "Explain briefly how it works in one or two sentences."
+        )
+    elif intent == "comparison":
+        instruction = (
+            "Explain the difference clearly in two short sentences."
+        )
+    elif intent == "reasoning":
+        instruction = (
+            "Explain the reason briefly and clearly."
+        )
+    else:
+        instruction = (
+            "Answer briefly and clearly in one or two sentences."
+        )
 
-    template = f"""
-{base_rules}
+    template = f"""You are answering questions about Git.
 
-Instruction:
-{intent_instructions[intent]}
+{instruction}
 
 Context:
 {{context}}
 
-Question:
-{{question}}
+Question: {{question}}
 
-Answer:
-""".strip()
+Answer:"""
 
     return PromptTemplate(
         input_variables=["context", "question"],
-        template=template
+        template=template,
     )
 
 
+# -----------------------------
+# Answer generation
+# -----------------------------
 def answer_question(question: str, documents: List[Document]) -> str:
     intent = detect_intent(question)
     context = build_context(documents)
@@ -104,37 +154,66 @@ def answer_question(question: str, documents: List[Document]) -> str:
     llm = get_llm()
 
     chain = prompt | llm | StrOutputParser()
-    return chain.invoke({"context": context, "question": question})
+
+    try:
+        result = chain.invoke(
+            {"context": context, "question": question}
+        )
+    except Exception:
+        return "I couldn't generate an answer at this time."
+
+    if not result:
+        return "I couldn't generate an answer."
+
+    return post_process_answer(result)
 
 
+# -----------------------------
+# Post-processing
+# -----------------------------
+def post_process_answer(answer: str) -> str:
+    if not answer:
+        return answer
+
+    # Remove bullet/code artifacts
+    lines = [
+        ln for ln in answer.splitlines()
+        if not ln.strip().startswith(("-", "`", "["))
+    ]
+
+    text = " ".join(ln.strip() for ln in lines if ln.strip())
+
+    # Keep only first 2 sentences
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    short = " ".join(sentences[:2]).strip()
+
+    # Hard cap
+    if len(short) > 220:
+        short = short[:217].rsplit(" ", 1)[0] + "..."
+
+    return short
+
+
+# -----------------------------
+# Manual test
+# -----------------------------
 if __name__ == "__main__":
-    from pathlib import Path
-    import sys
-
-    sys.path.insert(0, str(Path(__file__).parent.parent))
-
-    from vectorstore import load_vectorstore
-    from retrieve import retrieve_documents
-
-    print("Loading vectorstore...")
-    vs = load_vectorstore()
+    from app.rag.retrieve import retrieve_documents
 
     tests = [
-        "How does git checkout-index work?",
-        "Why should I use git branch before pushing changes?",
-        "What is the difference between git merge and git rebase?"
+        "What is Git?",
+        "Explain git commit",
+        "How does git branch work?",
+        "Difference between git merge and git rebase",
+        "Why use git stash?",
     ]
 
     for q in tests:
-        intent = detect_intent(q)
-        k = 6 if intent == "comparison" else 4
-
-        print("\n" + "-" * 40)
+        print("\n" + "=" * 80)
         print(f"Question: {q}")
-        print(f"Detected intent: {intent}")
 
         docs = retrieve_documents(q)
         answer = answer_question(q, docs)
 
-        print("\nAnswer:")
+        print("\nAnswer:\n")
         print(answer)

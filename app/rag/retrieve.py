@@ -1,89 +1,182 @@
-from typing import List, Set
+from typing import List
 import re
 from langchain_core.documents import Document
-from .vectorstore import load_vectorstore
+from app.rag.vectorstore import load_vectorstore
 
+# -----------------------------
 # Retrieval settings
-SEARCH_K_PER_QUERY = 4
-FINAL_TOP_K = 8
+# -----------------------------
+SEARCH_K_PER_QUERY = 6
+FINAL_TOP_K = 6
 MMR_LAMBDA = 0.7
 
-# Expand query into multiple related sub-queries to improve semantic recall
+# Section priority per intent
+INTENT_SECTION_PRIORITY = {
+    "DEFINITION": ["NAME", "INTRO"],
+    "HOW": ["DESCRIPTION", "OPTIONS", "EXAMPLES"],
+    "WHY": ["NOTES", "DESCRIPTION"],
+    "COMPARE": ["DESCRIPTION", "NOTES"],
+    "GENERAL": ["DESCRIPTION", "INTRO", "OPTIONS"],
+}
+
+
+# -----------------------------
+# Query understanding
+# -----------------------------
+
+def extract_git_command(query: str) -> str | None:
+    match = re.search(r"git\s+([a-z\-]+)", query.lower())
+    return match.group(1) if match else None
+
+
+def detect_intent(query: str) -> str:
+    q = query.lower()
+
+    if any(w in q for w in ["what is", "what does", "define", "meaning of"]):
+        return "DEFINITION"
+    if any(w in q for w in ["how", "how to", "works", "do i"]):
+        return "HOW"
+    if any(w in q for w in ["why", "when", "should"]):
+        return "WHY"
+    if any(w in q for w in ["difference", "compare", "vs"]):
+        return "COMPARE"
+
+    return "GENERAL"
+
+
+# -----------------------------
+# Query expansion
+# -----------------------------
+
 def expand_query(query: str) -> List[str]:
     expanded = [query]
 
-    tokens = re.findall(r"[a-zA-Z\-]{3,}", query.lower())
+    command = extract_git_command(query)
+    intent = detect_intent(query)
 
-    for token in tokens:
-        expanded.append(token)
-        expanded.append(f"git {token}")
+    if command:
+        expanded.append(f"git {command}")
+        expanded.append(f"Git Command: {command}")
 
-    seen: Set[str] = set()
-    result: List[str] = []
+        for section in INTENT_SECTION_PRIORITY.get(intent, []):
+            expanded.append(f"Git Command: {command} Section: {section}")
 
-    for q in expanded:
-        if q not in seen:
-            seen.add(q)
-            result.append(q)
+    else:
+        # fallback for generic Git questions
+        expanded.append("Git version control system")
+        expanded.append("Git distributed version control")
 
-    return result
+    return list(dict.fromkeys(expanded))
 
 
-# Deduplicate documents based on source and section metadata
-def deduplicate_documents(documents: List[Document]) -> List[Document]:
-    seen_keys = set()
-    unique_docs: List[Document] = []
+# -----------------------------
+# Deduplication
+# -----------------------------
 
-    for doc in documents:
+def deduplicate_documents(docs: List[Document]) -> List[Document]:
+    seen = set()
+    unique = []
+
+    for doc in docs:
         key = (
-            doc.metadata.get("source"),
+            doc.metadata.get("command"),
             doc.metadata.get("section"),
+            doc.metadata.get("chunk_index"),
         )
+        if key not in seen:
+            seen.add(key)
+            unique.append(doc)
 
-        if key not in seen_keys:
-            seen_keys.add(key)
-            unique_docs.append(doc)
+    return unique
 
-    return unique_docs
 
-# Retrieve documents relevant to the query
-def retrieve_documents(query: str, k: int = FINAL_TOP_K) -> List[Document]:
+# -----------------------------
+# Reranking (crucial)
+# -----------------------------
+
+def rerank_results(results: List[Document], query: str, intent: str) -> List[Document]:
+    qtokens = set(re.findall(r"\w+", query.lower()))
+    preferred_sections = INTENT_SECTION_PRIORITY.get(intent, [])
+
+    scored = []
+
+    for idx, doc in enumerate(results):
+        score = 0
+
+        cmd = (doc.metadata.get("command") or "").lower()
+        sec = (doc.metadata.get("section") or "").upper()
+        content = (doc.page_content or "").lower()
+        length = len(doc.page_content)
+
+        # Base: earlier results matter
+        score += max(0, 20 - idx)
+
+        # Section priority
+        if sec in preferred_sections:
+            score += 15
+
+        # Command match
+        if any(t in cmd for t in qtokens):
+            score += 10
+
+        # Content keyword match
+        score += sum(1 for t in qtokens if t in content)
+
+        # Penalize very long chunks (bad for simple answers)
+        if length > 1500:
+            score -= 5
+
+        scored.append((score, doc))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [d for _, d in scored]
+
+
+# -----------------------------
+# Main retrieval
+# -----------------------------
+
+def retrieve_documents(query: str, k: int = FINAL_TOP_K, vectorstore=None) -> List[Document]:
     vectorstore = load_vectorstore()
+
+    intent = detect_intent(query)
     expanded_queries = expand_query(query)
 
     all_results: List[Document] = []
 
     for q in expanded_queries:
-        results = vectorstore.max_marginal_relevance_search(
+        hits = vectorstore.max_marginal_relevance_search(
             q,
             k=SEARCH_K_PER_QUERY,
             lambda_mult=MMR_LAMBDA,
         )
-        all_results.extend(results)
+        all_results.extend(hits)
 
-    unique_results = deduplicate_documents(all_results)
+    unique = deduplicate_documents(all_results)
+    reranked = rerank_results(unique, query, intent)
 
-    return unique_results[:k]
+    return reranked[:k]
 
 
+# -----------------------------
+# Manual test
+# -----------------------------
 if __name__ == "__main__":
-    test_queries = [
-        "How does git checkout-index work?",
-        "What is the difference between git merge and git rebase?",
-        "Why should I use git branch before pushing changes?"
+    tests = [
+        "What is Git?",
+        "How to create a new branch?",
+        "Explain git rebase",
+        "Why use git stash?",
+        "Difference between git merge and rebase",
     ]
 
-    for query in test_queries:
+    for q in tests:
         print("\n" + "=" * 80)
-        print(f"Query: {query}\n")
+        print(f"Query: {q}\n")
 
-        results = retrieve_documents(query)
+        docs = retrieve_documents(q)
 
-        for i, doc in enumerate(results, start=1):
-            print(f"Result {i}")
-            print(f"Source : {doc.metadata.get('source')}")
-            print(f"Topic  : {doc.metadata.get('topic')}")
-            print(f"Section: {doc.metadata.get('section')}")
-            print("-" * 40)
-            print(doc.page_content[:500].strip())
+        for i, d in enumerate(docs, 1):
+            print(f"[{i}] {d.metadata.get('command')} | {d.metadata.get('section')}")
+            print(d.page_content[:300].strip())
             print()
